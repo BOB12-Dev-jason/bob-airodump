@@ -4,10 +4,10 @@
 
 #include "radiotap.h"
 
-void test(const unsigned char*);
+void test(const unsigned char* pkt);
+void parse_present(uint32_t present);
 
 typedef struct ieee80211_radiotap_header radiotapHeader;
-typedef enum ieee80211_radiotap_presence radiotapPresent;
 
 int airodump(const char* interface) {
 
@@ -44,13 +44,7 @@ int airodump(const char* interface) {
         printf("radiotap-header present: %02x\n\n", radio_header->it_present);
 
         uint32_t present = radio_header->it_present;
-        // printf("bit check: %02x\n", (present << 3) & 1);
-        uint8_t val;
-        for(int i=31; i>=0; i--) {
-            val = (present >> i) & 1;
-            if(val == 1)
-                printf("bit %d: %02x\n", i, val);
-        }
+        parse_present(present);
         
         // test(packet);
         
@@ -68,4 +62,38 @@ void test(const unsigned char* pkt) {
     for(int i=0; i<40; i++)
         printf("%02x ", *(pkt + i));
     putchar('\n');
+}
+
+
+void parse_present(uint32_t present) {
+    uint8_t val;
+    for(int i=32; i>=0; i--) {
+        val = (present >> i) & 1; // 각 비트값이 1인지 확인
+        if(val == 1) {
+            printf("bit %d: %02x\n", i, val);
+            // i는 present의 비트 자릿값. 자릿수마다 정의된 enum과 비교.
+            switch (i)
+            {
+            case IEEE80211_RADIOTAP_TSFT:
+                /* code */
+                break;
+            
+            case IEEE80211_RADIOTAP_FLAGS:
+                break;
+            
+            case IEEE80211_RADIOTAP_RATE:
+                break;
+            
+            case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
+                break;
+            
+            case IEEE80211_RADIOTAP_EXT:
+                break;
+            
+            default:
+                break;
+            }
+        }
+            
+    }
 }
