@@ -12,6 +12,7 @@ typedef struct ieee80211_radiotap_header radiotapHeader;
 typedef struct ieee80211_MacHeader macHeader;
 typedef struct ieee80211_beaconFrameBody beaconBody;
 
+int get_channel_num(uint16_t frequency);
 void parse_present(uint32_t* present);
 void printMac(uint8_t addr[]);
 int is_beaconFrame(macHeader* hdr);
@@ -19,7 +20,7 @@ void printInfo(int bssid_count);
 
 typedef struct {
     unsigned char bssid[20];
-    int pwr;
+    int8_t pwr;
     int beacons;
     int channel;
     unsigned char essid[256];
@@ -65,6 +66,18 @@ int airodump(const char* interface) {
             dbm_antsignal = *(int8_t *)(packet + radio_header->it_len);
             printf("Antenna Signal Strength: %ddBm\n", dbm_antsignal);
         }
+
+        uint16_t frequency;
+        if (radio_header->it_present & (1 << IEEE80211_RADIOTAP_CHANNEL)) {
+            frequency = *(uint16_t *)(packet + radio_header->it_len);
+            uint16_t flags = *(uint16_t *)(packet + radio_header->it_len + 2);
+            printf("Channel Frequency: %d MHz, Flags: 0x%X\n", frequency, flags);
+        } else {
+            frequency = 0;
+        }
+
+        int captured_channel = get_channel_num(frequency);
+
         // printf("radiotap-header version: %02x\n", radio_header->it_version);
         // printf("radiotap-header pad: %02x\n", radio_header->it_pad);
         // printf("radiotap-header length: %02x(dec %d)\n", radio_header->it_len, radio_header->it_len);
@@ -113,6 +126,8 @@ int airodump(const char* interface) {
                 // 기존에 있던 bssid인 경우 beacons 1 증가
                 if(strcmp(beacon_bssid, tmp_bssid) == 0) {
                     infos[i].beacons++;
+                    infos[i].pwr = dbm_antsignal;
+                    infos[i].channel = captured_channel;
                     is_new_bssid = 0;
                     break;
                 }
@@ -135,7 +150,7 @@ int airodump(const char* interface) {
                 strcpy(info->essid, tmp_essid);
 
                 info->pwr = dbm_antsignal;
-                info->channel = 99;
+                info->channel = captured_channel;
 
                 bssid_count++;
             }
@@ -143,6 +158,7 @@ int airodump(const char* interface) {
         }
 
         // 정보 출력
+        // system("clear");
         puts("BSSID\t\t\tPWR\tBeacons\t\tChannel\t\tESSID");
         for(int i=0; i<bssid_count; i++) {
             printf("%s\t%d\t%d\t\t%d\t\t%s\n", infos[i].bssid, infos[i].pwr, infos[i].beacons, infos[i].channel, infos[i].essid);
@@ -156,7 +172,6 @@ int airodump(const char* interface) {
 } // int airodump()
 
 
-
 void printInfo(int cnt) {
     puts("BSSID\tPWR\tBeacons\tChannel\tESSID");
     for(int i=0; i<cnt; i++) {
@@ -164,6 +179,17 @@ void printInfo(int cnt) {
     }
 }
 
+
+int get_channel_num(uint16_t frequency) {
+    if (frequency >= 2412 && frequency <= 2472) {
+        return (frequency - 2407) / 5;
+    } else if (frequency == 2484) {
+        return 14;
+    } else if (frequency >= 5170 && frequency <= 5825) {
+        return (frequency - 5000) / 5;
+    }
+    return -1;  // 알 수 없는 주파수
+}
 
 int is_beaconFrame(macHeader* hdr) {
     uint16_t BE_frame_ctl = ntohs(hdr->frame_control); // 빅엔디안 frame control field
