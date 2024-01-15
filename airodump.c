@@ -2,24 +2,27 @@
 #include <pcap.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "radiotap.h"
 #include "macHeader.h"
+#include "beaconFrameBody.h"
 
 typedef struct ieee80211_radiotap_header radiotapHeader;
 typedef struct ieee80211_MacHeader macHeader;
+typedef struct ieee80211_beaconFrameBody beaconBody;
 
-void test(const unsigned char* pkt);
 void parse_present(uint32_t* present);
 void printMac(uint8_t addr[]);
 int is_beaconFrame(macHeader* hdr);
+void printInfo(int bssid_count);
 
 typedef struct {
     unsigned char bssid[20];
     int pwr;
     int beacons;
     int channel;
-    unsigned char ESSID[256];
+    unsigned char essid[256];
 } frameInfo;
 
 
@@ -56,33 +59,38 @@ int airodump(const char* interface) {
 
         radiotapHeader* radio_header;
         radio_header = packet;
-        puts("packet captured");
-        printf("radiotap-header version: %02x\n", radio_header->it_version);
-        printf("radiotap-header pad: %02x\n", radio_header->it_pad);
-        printf("radiotap-header length: %02x(dec %d)\n", radio_header->it_len, radio_header->it_len);
-        printf("radiotap-header present: %02x\n\n", radio_header->it_present);
+        // puts("packet captured");
+        int8_t dbm_antsignal;
+        if (radio_header->it_present & (1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL)) {
+            dbm_antsignal = *(int8_t *)(packet + radio_header->it_len);
+            printf("Antenna Signal Strength: %ddBm\n", dbm_antsignal);
+        }
+        // printf("radiotap-header version: %02x\n", radio_header->it_version);
+        // printf("radiotap-header pad: %02x\n", radio_header->it_pad);
+        // printf("radiotap-header length: %02x(dec %d)\n", radio_header->it_len, radio_header->it_len);
+        // printf("radiotap-header present: %02x\n\n", radio_header->it_present);
 
         // 편법 쓰면 그냥 (radio length - 1) 위치에 antenna signal 있을 것 같기도 함
         uint32_t present = radio_header->it_present;
         if((present >> 5) & 1) {
             // antenna signal 있을 때만 파싱
-            puts("dbm antenna signal bit is 1");
-            parse_present(&present);
+            // puts("dbm antenna signal bit is 1");
+            // parse_present(&present);
         }
         
         macHeader* machdr = (packet + radio_header->it_len);
-        puts("print macHeader");
-        printf("macheader-frameControl: %02x\n", ntohs(machdr->frame_control));
-        printf("macheader-duration: %02x\n", machdr->duration);
-        printf("macheader-addr1:");
-        printMac(machdr->addr1);
-        printf("macheader-addr2:");
-        printMac(machdr->addr2);
-        printf("macheader-addr3:");
-        printMac(machdr->addr3);
-        printf("macheader-seq_control: %02x\n\n", machdr->seq_control);
+        // puts("print macHeader");
+        // printf("macheader-frameControl: %02x\n", ntohs(machdr->frame_control));
+        // printf("macheader-duration: %02x\n", machdr->duration);
+        // printf("macheader-addr1:");
+        // printMac(machdr->addr1);
+        // printf("macheader-addr2:");
+        // printMac(machdr->addr2);
+        // printf("macheader-addr3:");
+        // printMac(machdr->addr3);
+        // printf("macheader-seq_control: %02x\n\n", machdr->seq_control);
 
-        // 비콘 프레임인 경우 추가하거나 beacons 증가
+        // 비콘 프레임인 경우에 대한 처리
         if(is_beaconFrame(machdr)) {
             uint8_t* bssid_arr = machdr->addr3;
             char tmp_bssid[20];
@@ -90,11 +98,19 @@ int airodump(const char* interface) {
                     "%02x:%02x:%02x:%02x:%02x:%02x",
                     bssid_arr[0], bssid_arr[1], bssid_arr[2], bssid_arr[3], bssid_arr[4], bssid_arr[5]);
             
-            printf("tmp bssid: %s\n", tmp_bssid);
+            // printf("tmp bssid: %s\n", tmp_bssid);
+
+
+            beaconBody* body = ((uint8_t*)machdr + 24); // mac header의 12byte 뒤부터 프레임 몸체 (beacon frame의 길이는 24byte)
+            // printf("beacon body timestamp: %02x\n", body->timestamp);
+            // printf("beacon body beacon_interval: %02x\n", body->beacon_interval);
+            // printf("beacon body cap_info: %02x\n", body->cap_info);
+            // printf("beacon body tag length: %02x\n", body->tag_length);
 
             // 새로운 bssid인지 확인
             for(int i=0; i<512; i++) {
                 const char* beacon_bssid = infos[i].bssid;
+                // 기존에 있던 bssid인 경우 beacons 1 증가
                 if(strcmp(beacon_bssid, tmp_bssid) == 0) {
                     infos[i].beacons++;
                     is_new_bssid = 0;
@@ -102,42 +118,50 @@ int airodump(const char* interface) {
                 }
             }
 
+            // 새로운 bssid가 맞으면 infos에 추가
             if(is_new_bssid) {
-                // infos[bssid_count++].bssid = tmp_bssid;
+                frameInfo* info = &(infos[bssid_count]);
+                strcpy(info->bssid, tmp_bssid);
+                // strcpy(infos[bssid_count].bssid,tmp_bssid);
+                info->beacons = 1;
 
+                // ssid (essid) 추출
+                uint8_t* ssid_addr = ((uint8_t*)body + 14);
+                int ssid_length = body->tag_length;
+                unsigned char* tmp_essid = calloc(1, ssid_length + 1);
+                strncpy(tmp_essid, ssid_addr, ssid_length);
+                tmp_essid[ssid_length] = '\0';
+
+                strcpy(info->essid, tmp_essid);
+
+                info->pwr = dbm_antsignal;
+                info->channel = 99;
+
+                bssid_count++;
             }
 
-            // 새로운 bssid가 맞으면 infos에 추가
-
-            // 아니면 기존 bssid의 비콘 프레임 카운트 증가
-            puts("it is beacon Frame");
-            printf("BSSID: ");
-            printMac(machdr->addr3);
         }
 
-
+        // 정보 출력
+        puts("BSSID\t\t\tPWR\tBeacons\t\tChannel\t\tESSID");
+        for(int i=0; i<bssid_count; i++) {
+            printf("%s\t%d\t%d\t\t%d\t\t%s\n", infos[i].bssid, infos[i].pwr, infos[i].beacons, infos[i].channel, infos[i].essid);
+        }
         
-
-        
-    }
+    } // while(1)
 
     pcap_close(handle);
     return 0;
 
-}
+} // int airodump()
 
 
-// 캡처된 패킷을 확인하는 코드
-void test(const unsigned char* pkt) {
-    printf("captured bytes: ");
-    for(int i=0; i<40; i++)
-        printf("%02x ", *(pkt + i));
-    putchar('\n');
-}
 
-
-void printInfo() {
+void printInfo(int cnt) {
     puts("BSSID\tPWR\tBeacons\tChannel\tESSID");
+    for(int i=0; i<cnt; i++) {
+
+    }
 }
 
 
@@ -155,6 +179,8 @@ int is_beaconFrame(macHeader* hdr) {
 }
 
 
+
+// deprecated
 void printMac(uint8_t addr[]) {
     for(int i=0; i<5; i++)
         printf("%02x:", addr[i]);
@@ -163,6 +189,7 @@ void printMac(uint8_t addr[]) {
 }
 
 
+// deprecated
 void parse_present(uint32_t* present) {
     unsigned int dbm_antsignal_offset = 0; // present flags로부터 신호 세기까지의 offset
     int ext_flag = 0;
