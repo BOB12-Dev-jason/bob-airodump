@@ -1,16 +1,27 @@
 #include <stdio.h>
 #include <pcap.h>
 #include <netinet/in.h>
+#include <string.h>
 
 #include "radiotap.h"
-#include "mac.h"
+#include "macHeader.h"
+
+typedef struct ieee80211_radiotap_header radiotapHeader;
+typedef struct ieee80211_MacHeader macHeader;
 
 void test(const unsigned char* pkt);
 void parse_present(uint32_t* present);
 void printMac(uint8_t addr[]);
+int is_beaconFrame(macHeader* hdr);
 
-typedef struct ieee80211_radiotap_header radiotapHeader;
-typedef struct ieee80211_MacHeader macHeader;
+typedef struct {
+    unsigned char bssid[20];
+    int pwr;
+    int beacons;
+    int channel;
+    unsigned char ESSID[256];
+} frameInfo;
+
 
 int airodump(const char* interface) {
 
@@ -27,9 +38,14 @@ int airodump(const char* interface) {
 
     struct pcap_pkthdr* header;
 	const unsigned char* packet; // const u_char* packet;
+    
+    frameInfo infos[512];
+    int bssid_count = 0;
+    int is_new_bssid;
 
     while(1) {
 
+        is_new_bssid = 1;
         // pcap next ex
         int res = pcap_next_ex(handle, &header, &packet);
 		if (res == 0) continue;
@@ -56,7 +72,7 @@ int airodump(const char* interface) {
         
         macHeader* machdr = (packet + radio_header->it_len);
         puts("print macHeader");
-        printf("macheader-frameControl: %02x\n", ntohl(machdr->frame_control));
+        printf("macheader-frameControl: %02x\n", ntohs(machdr->frame_control));
         printf("macheader-duration: %02x\n", machdr->duration);
         printf("macheader-addr1:");
         printMac(machdr->addr1);
@@ -66,9 +82,41 @@ int airodump(const char* interface) {
         printMac(machdr->addr3);
         printf("macheader-seq_control: %02x\n\n", machdr->seq_control);
 
-        uint16_t tmp = (machdr->frame_control >> 8);
-        // if((frame_ctl & 0x00))
+        // 비콘 프레임인 경우 추가하거나 beacons 증가
+        if(is_beaconFrame(machdr)) {
+            uint8_t* bssid_arr = machdr->addr3;
+            char tmp_bssid[20];
+            sprintf(tmp_bssid,
+                    "%02x:%02x:%02x:%02x:%02x:%02x",
+                    bssid_arr[0], bssid_arr[1], bssid_arr[2], bssid_arr[3], bssid_arr[4], bssid_arr[5]);
+            
+            printf("tmp bssid: %s\n", tmp_bssid);
 
+            // 새로운 bssid인지 확인
+            for(int i=0; i<512; i++) {
+                const char* beacon_bssid = infos[i].bssid;
+                if(strcmp(beacon_bssid, tmp_bssid) == 0) {
+                    infos[i].beacons++;
+                    is_new_bssid = 0;
+                    break;
+                }
+            }
+
+            if(is_new_bssid) {
+                // infos[bssid_count++].bssid = tmp_bssid;
+
+            }
+
+            // 새로운 bssid가 맞으면 infos에 추가
+
+            // 아니면 기존 bssid의 비콘 프레임 카운트 증가
+            puts("it is beacon Frame");
+            printf("BSSID: ");
+            printMac(machdr->addr3);
+        }
+
+
+        
 
         
     }
@@ -87,9 +135,30 @@ void test(const unsigned char* pkt) {
     putchar('\n');
 }
 
+
+void printInfo() {
+    puts("BSSID\tPWR\tBeacons\tChannel\tESSID");
+}
+
+
+int is_beaconFrame(macHeader* hdr) {
+    uint16_t BE_frame_ctl = ntohs(hdr->frame_control); // 빅엔디안 frame control field
+    uint8_t subtype = BE_frame_ctl >> 12;
+    uint8_t type = (BE_frame_ctl >> 10) & 0b11;
+    uint8_t ver = (BE_frame_ctl >> 8) & 0b11;
+    // type이 00이면 관리프레임, subtype이 1000이면 비콘 프레임
+    if((type==0b00) && (subtype==0b1000)) return 1;
+    else return 0;
+    // printf("subtype: %x\n", subtype);
+    // printf("type: %x\n", type);
+    // printf("ver: %x\n", ver);
+}
+
+
 void printMac(uint8_t addr[]) {
-    for(int i=0; i<6; i++)
-        printf("%02x ", addr[i]);
+    for(int i=0; i<5; i++)
+        printf("%02x:", addr[i]);
+    printf("%02x", addr[5]);
     putchar('\n');
 }
 
