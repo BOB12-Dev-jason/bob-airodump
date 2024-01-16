@@ -12,11 +12,18 @@ typedef struct ieee80211_radiotap_header radiotapHeader;
 typedef struct ieee80211_MacHeader macHeader;
 typedef struct ieee80211_beaconFrameBody beaconBody;
 
-int get_channel_num(uint16_t frequency);
-// void parse_present(uint32_t* present);
+int parse_present(uint32_t* present);
 int8_t get_antsignal_offset(radiotapHeader* hdr);
 void printMac(uint8_t addr[]);
 int is_beaconFrame(macHeader* hdr);
+
+typedef struct {
+    uint8_t flags;
+    uint8_t rate;
+    uint16_t frequency;
+    uint16_t channel_flags;
+    uint8_t antenna_signal;
+} radio_more_hdr;
 
 typedef struct {
     uint8_t tagNum;
@@ -38,8 +45,8 @@ int airodump(const char* interface) {
     const char* ifname = interface;
 
     // pcap open live
-    // pcap_t* handle = pcap_open_live(ifname, BUFSIZ, 1, 1000, errbuf);
-    pcap_t* handle = pcap_open_offline(ifname, errbuf);
+    pcap_t* handle = pcap_open_live(ifname, BUFSIZ, 1, 1000, errbuf);
+    // pcap_t* handle = pcap_open_offline(ifname, errbuf);
     if (handle == NULL) {
         fprintf(stderr, "couldn't open device %s(%s)\n", ifname, errbuf);
 		return -1;
@@ -65,25 +72,18 @@ int airodump(const char* interface) {
 
         radiotapHeader* radio_header;
         radio_header = packet;
-        // puts("packet captured");
-        int8_t dbm_antsignal;
-        // int8_t offset = get_antsignal_offset(radio_header);
-        // dbm_antsignal = *(int8_t *)(packet + offset);
-        // printf("Antenna Signal Strength: %ddBm\n", dbm_antsignal);
 
+        radio_more_hdr* more_hdr = ((uint8_t*)radio_header + 8);
+        // radiotap header에서 고정길이 8byte + present에 ext 있으면 4byte 추가 + radio_more_hdr에 넣기
         if (radio_header->it_present & (1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL)) {
-            dbm_antsignal = *(int8_t *)(packet + radio_header->it_len);
-            printf("Antenna Signal Strength: %ddBm\n", dbm_antsignal);
+            if (radio_header->it_present & (1 << IEEE80211_RADIOTAP_CHANNEL)) {
+                puts("Antenna Signal flag active");
+                more_hdr = (uint8_t*)more_hdr + 4;
+            }
         }
 
-        uint16_t frequency;
-        if (radio_header->it_present & (1 << IEEE80211_RADIOTAP_CHANNEL)) {
-            frequency = *(uint16_t *)(packet + radio_header->it_len);
-            uint16_t flags = *(uint16_t *)(packet + radio_header->it_len + 2);
-            printf("Channel Frequency: %d MHz, Flags: 0x%X\n", frequency, flags);
-        } else {
-            frequency = 0;
-        }
+        uint8_t dbm_antsig_pwr = more_hdr->antenna_signal;
+        printf("Antenna Signal Strength: %ddBm\n", more_hdr->antenna_signal);
 
         // int captured_channel = get_channel_num(frequency);
         // printf("captued_channel: %d\n", captured_channel);
@@ -135,7 +135,7 @@ int airodump(const char* interface) {
                 // 기존에 있던 bssid인 경우 beacons 1 증가
                 if(strcmp(beacon_bssid, tmp_bssid) == 0) {
                     infos[i].beacons++;
-                    infos[i].pwr = dbm_antsignal;
+                    infos[i].pwr = dbm_antsig_pwr;
                     // if(captured_channel != -1)
                     //     infos[i].channel = captured_channel;
                     is_new_bssid = 0;
@@ -170,7 +170,7 @@ int airodump(const char* interface) {
                 printf("tmp_channel: %d\n", tmp_channel);
                 info->channel= tmp_channel;
 
-                info->pwr = dbm_antsignal;
+                info->pwr = dbm_antsig_pwr;
 
                 bssid_count++;
             }
@@ -188,18 +188,6 @@ int airodump(const char* interface) {
     return 0;
 
 } // int airodump()
-
-
-int get_channel_num(uint16_t frequency) {
-    if (frequency >= 2412 && frequency <= 2472) {
-        return (frequency - 2407) / 5;
-    } else if (frequency == 2484) {
-        return 14;
-    } else if (frequency >= 5170 && frequency <= 5825) {
-        return (frequency - 5000) / 5;
-    }
-    return -1;  // 알 수 없는 주파수
-}
 
 int is_beaconFrame(macHeader* hdr) {
     uint16_t BE_frame_ctl = ntohs(hdr->frame_control); // 빅엔디안 frame control field
@@ -230,7 +218,7 @@ int8_t get_antsignal_offset(radiotapHeader* hdr) {
         offset += 4;
     }
     if (hdr->it_present & (1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL)) {
-        offset += hdr->it_len;
+        offset + 14;
         // printf("Antenna Signal Strength: %ddBm\n", dbm_antsignal);
     }
     return offset;
@@ -238,9 +226,9 @@ int8_t get_antsignal_offset(radiotapHeader* hdr) {
 
 
 // deprecated
-void parse_present(uint32_t* present) {
-    unsigned int dbm_antsignal_offset = 0; // present flags로부터 신호 세기까지의 offset
-    int ext_flag = 0;
+int parse_present(uint32_t* present) {
+    int additional_length; // present flags로부터 신호 세기까지의 offset
+    int ext_flag;
     uint8_t val;
     for(int i=32; i>=0; i--) {
         val = (*present >> i) & 1; // 각 비트값이 1인지 확인
@@ -250,22 +238,22 @@ void parse_present(uint32_t* present) {
             switch (i)
             {
             case IEEE80211_RADIOTAP_TSFT:
-                dbm_antsignal_offset += 8; // MAC Timestamp가 추가되어 8byte 추가
+                additional_length += 8; // MAC Timestamp가 추가되어 8byte 추가
                 break;
             
             case IEEE80211_RADIOTAP_FLAGS:
-                dbm_antsignal_offset += 1; // signals 1byte 추가
+                additional_length += 1; // signals 1byte 추가
                 break;
             
             case IEEE80211_RADIOTAP_RATE:
-                dbm_antsignal_offset += 1; // Rate 1byte 추가
+                additional_length += 1; // Rate 1byte 추가
                 break;
             
             case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
                 break;
             
             case IEEE80211_RADIOTAP_EXT:
-                dbm_antsignal_offset += 4; // present flag 4byte 추가
+                additional_length += 4; // present flag 4byte 추가
                 ext_flag = 1;
                 // parse_present(present + 4); // 4바이트 뒤를 다시 파싱
                 break;
